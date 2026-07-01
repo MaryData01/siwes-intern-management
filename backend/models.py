@@ -1,24 +1,50 @@
+import os
 from datetime import datetime
-from flask_sqlalchemy import SQLAlchemy
+from pymongo import MongoClient
+from bson import ObjectId
 
-db = SQLAlchemy()
+_mongo_client = None
 
-class User(db.Model):
-    __tablename__ = 'users'
+def get_db():
+    global _mongo_client
+    if _mongo_client is None:
+        mongo_uri = os.environ.get('MONGODB_URI')
+        if not mongo_uri:
+            print("WARNING: MONGODB_URI environment variable is not set!")
+            mongo_uri = "mongodb://localhost:27017/siwes"
+        _mongo_client = MongoClient(mongo_uri)
     
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
-    email_address = db.Column(db.String(255), unique=True, nullable=True) # Nullable for interns
-    phone = db.Column(db.String(50), unique=True, nullable=False) # Unique and Required
-    password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(50), nullable=False) # 'supervisor' or 'intern'
-    is_active = db.Column(db.Boolean, default=True, nullable=False)
-    industry_department = db.Column(db.String(255), nullable=True) # supervisor only
-    security_question = db.Column(db.String(255), nullable=True)
-    security_answer_hash = db.Column(db.String(255), nullable=True)
-    
-    # Relationship to intern profile (1-to-1)
-    intern_profile = db.relationship('Intern', backref='user', cascade='all, delete-orphan', uselist=False)
+    try:
+        db = _mongo_client.get_default_database()
+    except Exception:
+        db = _mongo_client['siwes']
+    return db
+
+class MongoUser:
+    def __init__(self, doc):
+        self._doc = doc
+        
+    @property
+    def id(self):
+        return str(self._doc['_id'])
+        
+    def __getattr__(self, name):
+        if name in self._doc:
+            return self._doc[name]
+        return None
+        
+    def __setattr__(self, name, value):
+        if name == '_doc':
+            super().__setattr__(name, value)
+        else:
+            self._doc[name] = value
+            get_db().users.update_one({'_id': self._doc['_id']}, {'$set': {name: value}})
+            
+    @property
+    def intern_profile(self):
+        db = get_db()
+        intern_doc = db.interns.find_one({'user_id': self.id})
+        return MongoIntern(intern_doc) if intern_doc else None
 
     def to_dict(self):
         return {
@@ -32,20 +58,44 @@ class User(db.Model):
             'security_question': self.security_question
         }
 
-class Intern(db.Model):
-    __tablename__ = 'interns'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    school = db.Column(db.String(255), nullable=False)
-    course_of_study = db.Column(db.String(255), nullable=False) # renamed from department
-    specialization = db.Column(db.String(255), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    
-    # Relationships
-    attendance_records = db.relationship('Attendance', backref='intern', cascade='all, delete-orphan')
-
+class MongoIntern:
+    def __init__(self, doc):
+        self._doc = doc
+        
+    @property
+    def id(self):
+        return str(self._doc['_id'])
+        
+    def __getattr__(self, name):
+        if name in self._doc:
+            return self._doc[name]
+        return None
+        
+    def __setattr__(self, name, value):
+        if name == '_doc':
+            super().__setattr__(name, value)
+        else:
+            self._doc[name] = value
+            get_db().interns.update_one({'_id': self._doc['_id']}, {'$set': {name: value}})
+            
+    @property
+    def user(self):
+        db = get_db()
+        try:
+            user_doc = db.users.find_one({'_id': ObjectId(self._doc['user_id'])})
+        except Exception:
+            user_doc = None
+        return MongoUser(user_doc) if user_doc else None
+        
+    @property
+    def attendance_records(self):
+        db = get_db()
+        records = list(db.attendance.find({'intern_id': self.id}))
+        records = sorted(records, key=lambda x: x['date'])
+        return [MongoAttendance(r) for r in records]
+        
     def to_dict(self):
+        u = self.user
         att_records = self.attendance_records
         att_total = len(att_records)
         att_present = sum(1 for r in att_records if r.status == 'Present')
@@ -54,34 +104,42 @@ class Intern(db.Model):
         return {
             'id': self.id,
             'user_id': self.user_id,
-            'name': self.user.name,
-            'phone': self.user.phone,
-            'email_address': self.user.email_address,
-            'is_active': self.user.is_active,
+            'name': u.name if u else '',
+            'phone': u.phone if u else '',
+            'email_address': u.email_address if u else '',
+            'is_active': u.is_active if u else False,
             'school': self.school,
             'course_of_study': self.course_of_study,
             'specialization': self.specialization,
             'attendance_rate': round(att_pct, 1),
-            'created_at': self.created_at.isoformat()
+            'created_at': self.created_at
         }
 
-class Attendance(db.Model):
-    __tablename__ = 'attendance'
-    __table_args__ = (
-        db.UniqueConstraint('intern_id', 'date', name='uq_intern_date'),
-    )
-    
-    id = db.Column(db.Integer, primary_key=True)
-    intern_id = db.Column(db.Integer, db.ForeignKey('interns.id', ondelete='CASCADE'), nullable=False)
-    date = db.Column(db.Date, nullable=False) # Needs to be a Thursday date
-    status = db.Column(db.String(20), nullable=False) # 'Present' or 'Absent'
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-
+class MongoAttendance:
+    def __init__(self, doc):
+        self._doc = doc
+        
+    @property
+    def id(self):
+        return str(self._doc['_id'])
+        
+    def __getattr__(self, name):
+        if name in self._doc:
+            return self._doc[name]
+        return None
+        
+    def __setattr__(self, name, value):
+        if name == '_doc':
+            super().__setattr__(name, value)
+        else:
+            self._doc[name] = value
+            get_db().attendance.update_one({'_id': self._doc['_id']}, {'$set': {name: value}})
+            
     def to_dict(self):
         return {
             'id': self.id,
             'intern_id': self.intern_id,
-            'date': self.date.isoformat(),
+            'date': self.date,
             'status': self.status,
-            'created_at': self.created_at.isoformat()
+            'created_at': self.created_at
         }

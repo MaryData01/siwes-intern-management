@@ -4,8 +4,8 @@ import jwt
 from flask import request, jsonify, Blueprint
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
-from models import db, User
-from sqlalchemy import func
+from bson import ObjectId
+from models import get_db, MongoUser
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -39,7 +39,14 @@ def token_required(f):
         try:
             secret = get_jwt_secret()
             data = jwt.decode(token, secret, algorithms=['HS256'])
-            current_user = db.session.get(User, data['sub'])
+            
+            db = get_db()
+            try:
+                user_doc = db.users.find_one({'_id': ObjectId(data['sub'])})
+            except Exception:
+                user_doc = None
+                
+            current_user = MongoUser(user_doc) if user_doc else None
             if not current_user or not current_user.is_active:
                 return jsonify({'message': 'User is inactive or deleted'}), 401
         except jwt.ExpiredSignatureError:
@@ -75,26 +82,35 @@ def login():
     
     print(f"DEBUG LOGIN: username input: '{username}', password: '{password}'")
     
-    # Try supervisor lookup by email_address or phone or name "supervisor"
-    user = User.query.filter(
-        User.role == 'supervisor',
-        (func.lower(User.email_address) == func.lower(username)) |
-        (User.phone == username) |
-        (func.lower(User.name) == func.lower(username))
-    ).first()
+    db = get_db()
+    username_regex = {"$regex": f"^{username}$", "$options": "i"}
     
-    if not user and username == 'supervisor':
-        user = User.query.filter(User.role == 'supervisor').first()
+    # Try supervisor lookup by email_address or phone or name (case-insensitive)
+    user_doc = db.users.find_one({
+        'role': 'supervisor',
+        '$or': [
+            {'email_address': username_regex},
+            {'phone': username},
+            {'name': username_regex}
+        ]
+    })
+    
+    if not user_doc and username == 'supervisor':
+        user_doc = db.users.find_one({'role': 'supervisor'})
         
     # If not found, try intern lookup by full name or phone (case-insensitive)
-    if not user:
-        user = User.query.filter(
-            User.role == 'intern',
-            (func.lower(User.name) == func.lower(username)) |
-            (User.phone == username) |
-            (func.lower(User.email_address) == func.lower(username))
-        ).first()
+    if not user_doc:
+        user_doc = db.users.find_one({
+            'role': 'intern',
+            '$or': [
+                {'name': username_regex},
+                {'phone': username},
+                {'email_address': username_regex}
+            ]
+        })
         
+    user = MongoUser(user_doc) if user_doc else None
+    
     print(f"DEBUG LOGIN: user found: {user is not None}")
     if user:
         pwd_match = check_password_hash(user.password_hash, password)
@@ -136,22 +152,30 @@ def get_forgot_question():
         return jsonify({'message': 'Please provide username or email'}), 400
         
     username = data.get('username').strip().lower()
+    db = get_db()
+    username_regex = {"$regex": f"^{username}$", "$options": "i"}
     
     # Lookup supervisor by name or phone
-    user = User.query.filter(
-        User.role == 'supervisor',
-        (func.lower(User.name) == func.lower(username)) |
-        (User.phone == username)
-    ).first()
+    user_doc = db.users.find_one({
+        'role': 'supervisor',
+        '$or': [
+            {'name': username_regex},
+            {'phone': username}
+        ]
+    })
     
     # Lookup intern by name or phone
-    if not user:
-        user = User.query.filter(
-            User.role == 'intern',
-            (func.lower(User.name) == func.lower(username)) |
-            (User.phone == username)
-        ).first()
+    if not user_doc:
+        user_doc = db.users.find_one({
+            'role': 'intern',
+            '$or': [
+                {'name': username_regex},
+                {'phone': username}
+            ]
+        })
         
+    user = MongoUser(user_doc) if user_doc else None
+    
     if not user:
         return jsonify({'message': 'User account not found'}), 404
         
@@ -173,20 +197,29 @@ def reset_forgot_password():
     security_answer = data.get('security_answer').strip().lower()
     new_password = data.get('new_password').strip()
     
+    db = get_db()
+    username_regex = {"$regex": f"^{username}$", "$options": "i"}
+    
     # Lookup supervisor by name or phone
-    user = User.query.filter(
-        User.role == 'supervisor',
-        (func.lower(User.name) == func.lower(username)) |
-        (User.phone == username)
-    ).first()
+    user_doc = db.users.find_one({
+        'role': 'supervisor',
+        '$or': [
+            {'name': username_regex},
+            {'phone': username}
+        ]
+    })
     
     # Lookup intern
-    if not user:
-        user = User.query.filter(
-            User.role == 'intern',
-            (func.lower(User.name) == func.lower(username)) |
-            (User.phone == username)
-        ).first()
+    if not user_doc:
+        user_doc = db.users.find_one({
+            'role': 'intern',
+            '$or': [
+                {'name': username_regex},
+                {'phone': username}
+            ]
+        })
+        
+    user = MongoUser(user_doc) if user_doc else None
         
     if not user:
         return jsonify({'message': 'User account not found'}), 404
@@ -201,7 +234,6 @@ def reset_forgot_password():
         return jsonify({'message': 'Password must be at least 4 characters long'}), 400
         
     user.password_hash = generate_password_hash(new_password)
-    db.session.commit()
     return jsonify({'message': 'Password updated successfully!'})
 
 # ----------------- INTERN ACCOUNT SECURITY -----------------
@@ -223,7 +255,6 @@ def intern_change_password(current_user):
         return jsonify({'message': 'Password must be at least 4 characters long'}), 400
         
     current_user.password_hash = generate_password_hash(new_password)
-    db.session.commit()
     return jsonify({'message': 'Password updated successfully!'})
 
 @auth_bp.route('/api/auth/account-security/set-question', methods=['POST'])
@@ -241,5 +272,4 @@ def intern_set_security_question(current_user):
         
     current_user.security_question = question
     current_user.security_answer_hash = generate_password_hash(answer)
-    db.session.commit()
     return jsonify({'message': 'Security recovery question configured successfully!'})

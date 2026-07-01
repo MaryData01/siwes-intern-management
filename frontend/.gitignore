@@ -44,3 +44,5 @@ env/
 
 # Python virtual environment
 .venv/
+reset_supervisor.py
+check_db.py

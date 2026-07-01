@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request
-from datetime import datetime, date
-from models import db, User, Intern, Attendance
+from datetime import datetime
+from models import get_db, MongoUser, MongoIntern, MongoAttendance
+from bson import ObjectId
 from auth import token_required, role_required
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -16,8 +17,13 @@ def get_surname(full_name):
 @token_required
 @role_required('supervisor')
 def get_supervisor_dashboard(current_user):
-    # Active interns query
-    active_interns = Intern.query.join(User).filter(User.is_active == True).all()
+    db = get_db()
+    
+    # Get active intern user IDs
+    active_user_ids = [str(u['_id']) for u in db.users.find({'role': 'intern', 'is_active': True})]
+    
+    # Get active interns
+    active_interns = [MongoIntern(doc) for doc in db.interns.find({'user_id': {'$in': active_user_ids}})]
     total_interns = len(active_interns)
     
     # Calculate average attendance rate for active interns
@@ -33,8 +39,8 @@ def get_supervisor_dashboard(current_user):
     
     # Interns table details
     interns_list = []
-    # Query all interns, joined with User
-    all_interns = Intern.query.all()
+    # Query all interns
+    all_interns = [MongoIntern(doc) for doc in db.interns.find({})]
     for intern in all_interns:
         # Calculate attendance %
         att_records = intern.attendance_records
@@ -42,35 +48,36 @@ def get_supervisor_dashboard(current_user):
         att_present = sum(1 for r in att_records if r.status == 'Present')
         att_pct = (att_present / att_total * 100) if att_total > 0 else 0.0
         
+        u = intern.user
         interns_list.append({
             'id': intern.id,
-            'name': intern.user.name,
-            'phone': intern.user.phone,
-            'email_address': intern.user.email_address or '',
+            'name': u.name if u else '',
+            'phone': u.phone if u else '',
+            'email_address': (u.email_address if u else '') or '',
             'school': intern.school,
             'course_of_study': intern.course_of_study,
             'specialization': intern.specialization,
             'attendance_rate': round(att_pct, 1),
-            'is_active': intern.user.is_active,
+            'is_active': u.is_active if u else False,
             'industry_department': current_user.industry_department or 'Software Department'
         })
         
     # Bar Chart: Attendance count per week (Present interns on Thursdays)
-    # Group attendance by date and count 'Present' for active interns
-    attendance_dates = db.session.query(Attendance.date).distinct().order_by(Attendance.date).all()
+    attendance_dates = sorted(db.attendance.distinct('date'))
     attendance_chart_data = []
     
-    for (att_date,) in attendance_dates:
+    active_intern_ids = [intern.id for intern in active_interns]
+    
+    for att_date in attendance_dates:
         # Count present active interns on this date
-        present_count = Attendance.query.join(Intern).join(User).filter(
-            Attendance.date == att_date,
-            Attendance.status == 'Present',
-            User.is_active == True
-        ).count()
+        present_count = db.attendance.count_documents({
+            'date': att_date,
+            'status': 'Present',
+            'intern_id': {'$in': active_intern_ids}
+        })
         
-        date_str = att_date.strftime('%Y-%m-%d')
         attendance_chart_data.append({
-            'date': date_str,
+            'date': att_date,
             'count': present_count
         })
 
@@ -89,8 +96,9 @@ def get_supervisor_dashboard(current_user):
 @token_required
 @role_required('supervisor')
 def manage_interns(current_user):
+    db = get_db()
     if request.method == 'GET':
-        interns = Intern.query.all()
+        interns = [MongoIntern(doc) for doc in db.interns.find({})]
         return jsonify([intern.to_dict() for intern in interns])
         
     elif request.method == 'POST':
@@ -109,15 +117,16 @@ def manage_interns(current_user):
             return jsonify({'message': 'Name, Phone, School, Course of Study, and Specialization are required'}), 400
             
         # Check unique name (login username)
-        if User.query.filter(db.func.lower(User.name) == db.func.lower(name)).first():
+        name_regex = {"$regex": f"^{name}$", "$options": "i"}
+        if db.users.find_one({'name': name_regex}):
             return jsonify({'message': f'Intern with name "{name}" already exists. Name must be unique.'}), 400
             
         # Check unique phone
-        if User.query.filter_by(phone=phone).first():
+        if db.users.find_one({'phone': phone}):
             return jsonify({'message': f'User with phone number {phone} already exists.'}), 400
             
         # Check unique email_address if provided
-        if email_address and User.query.filter_by(email_address=email_address).first():
+        if email_address and db.users.find_one({'email_address': email_address}):
             return jsonify({'message': f'User with email {email_address} already exists.'}), 400
             
         # Create default password from surname
@@ -127,36 +136,43 @@ def manage_interns(current_user):
             
         password_hash = generate_password_hash(surname)
         
-        user = User(
-            name=name,
-            phone=phone,
-            email_address=email_address if email_address else None,
-            password_hash=password_hash,
-            role='intern',
-            is_active=True
-        )
-        db.session.add(user)
-        db.session.flush()
+        user_id = db.users.insert_one({
+            'name': name,
+            'phone': phone,
+            'email_address': email_address if email_address else None,
+            'password_hash': password_hash,
+            'role': 'intern',
+            'is_active': True,
+            'security_question': 'What is the name of your first pet?',
+            'security_answer_hash': generate_password_hash('dog')
+        }).inserted_id
         
-        intern = Intern(
-            user_id=user.id,
-            school=school,
-            course_of_study=course_of_study,
-            specialization=specialization
-        )
-        db.session.add(intern)
-        db.session.commit()
+        intern_id = db.interns.insert_one({
+            'user_id': str(user_id),
+            'school': school,
+            'course_of_study': course_of_study,
+            'specialization': specialization,
+            'created_at': datetime.utcnow().isoformat()
+        }).inserted_id
         
+        intern = MongoIntern(db.interns.find_one({'_id': intern_id}))
         return jsonify({'message': 'Intern registered successfully', 'intern': intern.to_dict()}), 210
 
-@routes_bp.route('/api/supervisor/interns/<int:intern_id>', methods=['GET', 'PUT', 'DELETE'])
+@routes_bp.route('/api/supervisor/interns/<intern_id>', methods=['GET', 'PUT', 'DELETE'])
 @token_required
 @role_required('supervisor')
 def intern_detail(current_user, intern_id):
-    intern = db.session.get(Intern, intern_id)
-    if not intern:
+    db = get_db()
+    try:
+        intern_doc = db.interns.find_one({'_id': ObjectId(intern_id)})
+    except Exception:
+        intern_doc = None
+        
+    if not intern_doc:
         return jsonify({'message': 'Intern not found'}), 404
         
+    intern = MongoIntern(intern_doc)
+    
     if request.method == 'GET':
         return jsonify(intern.to_dict())
         
@@ -176,48 +192,59 @@ def intern_detail(current_user, intern_id):
             return jsonify({'message': 'Name, Phone, School, Course of Study, and Specialization are required'}), 400
             
         # Check uniqueness if changed
-        existing_phone = User.query.filter(User.phone == phone, User.id != intern.user_id).first()
+        existing_phone = db.users.find_one({'phone': phone, '_id': {'$ne': ObjectId(intern.user_id)}})
         if existing_phone:
             return jsonify({'message': 'Phone number is already in use by another user'}), 400
             
         if email_address:
-            existing_email = User.query.filter(User.email_address == email_address, User.id != intern.user_id).first()
+            existing_email = db.users.find_one({'email_address': email_address, '_id': {'$ne': ObjectId(intern.user_id)}})
             if existing_email:
                 return jsonify({'message': 'Email address is already in use by another user'}), 400
                 
-        existing_name = User.query.filter(db.func.lower(User.name) == db.func.lower(name), User.id != intern.user_id).first()
+        name_regex = {"$regex": f"^{name}$", "$options": "i"}
+        existing_name = db.users.find_one({'name': name_regex, '_id': {'$ne': ObjectId(intern.user_id)}})
         if existing_name:
             return jsonify({'message': 'Name is already in use by another user'}), 400
             
-        intern.user.name = name
-        intern.user.phone = phone
-        intern.user.email_address = email_address if email_address else None
+        # Update User doc
+        u = intern.user
+        u.name = name
+        u.phone = phone
+        u.email_address = email_address if email_address else None
+        
+        # Update Intern doc
         intern.school = school
         intern.course_of_study = course_of_study
         intern.specialization = specialization
         
-        db.session.commit()
         return jsonify({'message': 'Intern details updated successfully', 'intern': intern.to_dict()})
 
     elif request.method == 'DELETE':
-        user = intern.user
-        db.session.delete(user)
-        db.session.commit()
+        user_id = intern.user_id
+        db.users.delete_one({'_id': ObjectId(user_id)})
+        db.interns.delete_one({'_id': ObjectId(intern.id)})
+        db.attendance.delete_many({'intern_id': intern.id})
         return jsonify({'message': 'Intern permanently deleted'})
 
-@routes_bp.route('/api/supervisor/interns/<int:intern_id>/toggle-active', methods=['POST'])
+@routes_bp.route('/api/supervisor/interns/<intern_id>/toggle-active', methods=['POST'])
 @token_required
 @role_required('supervisor')
 def toggle_intern_active(current_user, intern_id):
-    intern = db.session.get(Intern, intern_id)
-    if not intern:
+    db = get_db()
+    try:
+        intern_doc = db.interns.find_one({'_id': ObjectId(intern_id)})
+    except Exception:
+        intern_doc = None
+        
+    if not intern_doc:
         return jsonify({'message': 'Intern not found'}), 404
         
-    intern.user.is_active = not intern.user.is_active
-    db.session.commit()
+    intern = MongoIntern(intern_doc)
+    u = intern.user
+    u.is_active = not u.is_active
     
-    status_str = "activated" if intern.user.is_active else "deactivated"
-    return jsonify({'message': f'Intern has been {status_str} successfully', 'is_active': intern.user.is_active})
+    status_str = "activated" if u.is_active else "deactivated"
+    return jsonify({'message': f'Intern has been {status_str} successfully', 'is_active': u.is_active})
 
 # ----------------- ATTENDANCE MODULE -----------------
 
@@ -225,33 +252,35 @@ def toggle_intern_active(current_user, intern_id):
 @token_required
 @role_required('supervisor')
 def get_attendance_dates(current_user):
-    dates = db.session.query(Attendance.date).distinct().order_by(Attendance.date.desc()).all()
-    return jsonify([d[0].strftime('%Y-%m-%d') for d in dates])
+    db = get_db()
+    dates = sorted(db.attendance.distinct('date'), reverse=True)
+    return jsonify(dates)
 
 @routes_bp.route('/api/supervisor/attendance', methods=['GET', 'POST'])
 @token_required
 @role_required('supervisor')
 def handle_attendance(current_user):
+    db = get_db()
     if request.method == 'GET':
         date_str = request.args.get('date')
         if not date_str:
             return jsonify({'message': 'Date parameter is required (YYYY-MM-DD)'}), 400
             
-        try:
-            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-        except ValueError:
-            return jsonify({'message': 'Invalid date format (must be YYYY-MM-DD)'}), 400
-            
-        active_interns = Intern.query.join(User).filter(User.is_active == True).all()
-        records = Attendance.query.filter_by(date=target_date).all()
-        records_map = {r.intern_id: r.status for r in records}
+        # Get active intern user IDs
+        active_user_ids = [str(u['_id']) for u in db.users.find({'role': 'intern', 'is_active': True})]
+        
+        # Get active interns
+        active_interns = [MongoIntern(doc) for doc in db.interns.find({'user_id': {'$in': active_user_ids}})]
+        
+        records = list(db.attendance.find({'date': date_str}))
+        records_map = {r['intern_id']: r['status'] for r in records}
         
         result = []
         for intern in active_interns:
             result.append({
                 'intern_id': intern.id,
-                'name': intern.user.name,
-                'phone': intern.user.phone,
+                'name': intern.user.name if intern.user else '',
+                'phone': intern.user.phone if intern.user else '',
                 'status': records_map.get(intern.id, 'Absent')
             })
             
@@ -270,7 +299,7 @@ def handle_attendance(current_user):
         records = data.get('records')
         
         try:
-            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            target_date = datetime.strptime(date_str, '%Y-%m-%d')
         except ValueError:
             return jsonify({'message': 'Invalid date format (must be YYYY-MM-DD)'}), 400
             
@@ -283,14 +312,12 @@ def handle_attendance(current_user):
             if status not in ['Present', 'Absent']:
                 return jsonify({'message': f'Invalid status: {status}. Must be Present or Absent'}), 400
                 
-            existing = Attendance.query.filter_by(intern_id=intern_id, date=target_date).first()
-            if existing:
-                existing.status = status
-            else:
-                new_att = Attendance(intern_id=intern_id, date=target_date, status=status)
-                db.session.add(new_att)
-                
-        db.session.commit()
+            db.attendance.update_one(
+                {'intern_id': intern_id, 'date': date_str},
+                {'$set': {'status': status, 'created_at': datetime.utcnow().isoformat()}},
+                upsert=True
+            )
+            
         return jsonify({'message': 'Attendance saved successfully'})
 
 # ----------------- SUPERVISOR PROFILE SETTINGS -----------------
@@ -299,6 +326,7 @@ def handle_attendance(current_user):
 @token_required
 @role_required('supervisor')
 def manage_supervisor_profile(current_user):
+    db = get_db()
     if request.method == 'GET':
         return jsonify({
             'name': current_user.name,
@@ -322,13 +350,13 @@ def manage_supervisor_profile(current_user):
             return jsonify({'message': 'Name, Phone, and Industry Department are required'}), 400
             
         # Check unique phone
-        existing_phone = User.query.filter(User.phone == phone, User.id != current_user.id).first()
+        existing_phone = db.users.find_one({'phone': phone, '_id': {'$ne': ObjectId(current_user.id)}})
         if existing_phone:
             return jsonify({'message': 'Phone number is already in use'}), 400
             
         # Check unique email
         if email_address:
-            existing_email = User.query.filter(User.email_address == email_address, User.id != current_user.id).first()
+            existing_email = db.users.find_one({'email_address': email_address, '_id': {'$ne': ObjectId(current_user.id)}})
             if existing_email:
                 return jsonify({'message': 'Email address is already in use'}), 400
                 
@@ -360,7 +388,6 @@ def manage_supervisor_profile(current_user):
                 return jsonify({'message': 'New password must be at least 4 characters long'}), 400
             current_user.password_hash = generate_password_hash(new_password)
             
-        db.session.commit()
         return jsonify({'message': 'Profile settings updated successfully!', 'user': current_user.to_dict()})
 
 # ----------------- INTERN DASHBOARD -----------------
@@ -369,16 +396,17 @@ def manage_supervisor_profile(current_user):
 @token_required
 @role_required('intern')
 def get_intern_dashboard(current_user):
+    db = get_db()
     intern = current_user.intern_profile
     if not intern:
         return jsonify({'message': 'Intern profile not found'}), 404
         
     # Get supervisor profile for industry department
-    supervisor = User.query.filter_by(role='supervisor').first()
-    ind_dept = supervisor.industry_department if supervisor else 'Software Department'
+    supervisor_doc = db.users.find_one({'role': 'supervisor'})
+    ind_dept = supervisor_doc.get('industry_department', 'Software Department') if supervisor_doc else 'Software Department'
     
     # Attendance summary
-    att_records = Attendance.query.filter_by(intern_id=intern.id).order_by(Attendance.date.desc()).all()
+    att_records = [MongoAttendance(r) for r in db.attendance.find({'intern_id': intern.id}).sort('date', -1)]
     attended = sum(1 for r in att_records if r.status == 'Present')
     absent = sum(1 for r in att_records if r.status == 'Absent')
     attendance_pct = (attended / len(att_records) * 100) if len(att_records) > 0 else 0.0
@@ -404,33 +432,39 @@ def get_intern_dashboard(current_user):
 
 # ----------------- REPORT CARD EXPORT DATA -----------------
 
-@routes_bp.route('/api/interns/<int:intern_id>/report', methods=['GET'])
+@routes_bp.route('/api/interns/<intern_id>/report', methods=['GET'])
 @token_required
 def get_intern_report(current_user, intern_id):
+    db = get_db()
     if current_user.role == 'intern' and current_user.intern_profile.id != intern_id:
         return jsonify({'message': 'Access forbidden'}), 403
         
-    intern = db.session.get(Intern, intern_id)
-    if not intern:
+    try:
+        intern_doc = db.interns.find_one({'_id': ObjectId(intern_id)})
+    except Exception:
+        intern_doc = None
+        
+    if not intern_doc:
         return jsonify({'message': 'Intern not found'}), 404
         
-    supervisor = User.query.filter_by(role='supervisor').first()
-    ind_dept = supervisor.industry_department if supervisor else 'Software Department'
+    intern = MongoIntern(intern_doc)
+    supervisor_doc = db.users.find_one({'role': 'supervisor'})
+    ind_dept = supervisor_doc.get('industry_department', 'Software Department') if supervisor_doc else 'Software Department'
     
     # Attendance records
-    att_records = Attendance.query.filter_by(intern_id=intern.id).order_by(Attendance.date).all()
+    att_records = [MongoAttendance(r) for r in db.attendance.find({'intern_id': intern.id}).sort('date', 1)]
     attended = sum(1 for r in att_records if r.status == 'Present')
     att_pct = (attended / len(att_records) * 100) if len(att_records) > 0 else 0.0
     
     return jsonify({
         'profile': {
-            'name': intern.user.name,
-            'phone': intern.user.phone,
-            'email_address': intern.user.email_address or '',
+            'name': intern.user.name if intern.user else '',
+            'phone': intern.user.phone if intern.user else '',
+            'email_address': (intern.user.email_address if intern.user else '') or '',
             'school': intern.school,
             'course_of_study': intern.course_of_study,
             'specialization': intern.specialization,
-            'is_active': intern.user.is_active,
+            'is_active': intern.user.is_active if intern.user else False,
             'industry_department': ind_dept
         },
         'attendance': {
