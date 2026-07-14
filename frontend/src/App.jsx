@@ -28,7 +28,7 @@ const MainLayout = ({ showNotification }) => {
   };
 
   const renderContent = () => {
-    if (user.role === 'supervisor') {
+    if (user.role === 'supervisor' || user.role === 'superuser') {
       switch (currentTab) {
         case 'dashboard':
           return (
@@ -105,7 +105,7 @@ const MainLayout = ({ showNotification }) => {
 
       <div className="main-content">
         {/* Supervisor Default Password Banner */}
-        {user.role === 'supervisor' && isDefaultPassword && (
+        {(user.role === 'supervisor' || user.role === 'superuser') && isDefaultPassword && (
           <div className="security-warning-banner">
             <AlertTriangle size={24} className="text-warning" style={{ flexShrink: 0 }} />
             <div style={{ flex: 1 }}>

@@ -32,7 +32,8 @@ const Sidebar = ({ currentTab, setCurrentTab, onClose }) => {
     { id: 'password', label: 'Account Security', icon: <ShieldCheck size={20} /> },
   ];
 
-  const menuItems = user.role === 'supervisor' ? supervisorMenu : internMenu;
+  const isSupervisorView = user.role === 'supervisor' || user.role === 'superuser';
+  const menuItems = isSupervisorView ? supervisorMenu : internMenu;
 
   return (
     <div className="sidebar">
@@ -81,7 +82,7 @@ const Sidebar = ({ currentTab, setCurrentTab, onClose }) => {
           <div className="user-info">
             <span className="user-name" title={user.name}>{user.name}</span>
             <span className="user-role">
-              {user.role === 'supervisor' ? 'Supervisor' : 'SIWES Intern'}
+              {user.role === 'superuser' ? 'System Admin' : user.role === 'supervisor' ? 'Supervisor' : 'SIWES Intern'}
             </span>
           </div>
         </div>
