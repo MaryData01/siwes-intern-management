@@ -232,6 +232,7 @@ button, input, select, textarea {
 /* Main Dashboard Area */
 .main-content {
   flex: 1;
+  min-width: 0;
   padding: 40px;
   min-height: 100vh;
   transition: var(--transition);
