@@ -163,6 +163,19 @@ const InternsTab = ({ selectedInternId, setSelectedInternId, showNotification })
     finally   { setSubmitting(false); }
   };
 
+  const handleResetPassword = async () => {
+    if (!window.confirm(`Reset ${profileData?.profile?.name}'s password to their surname?`)) return;
+    try {
+      const res  = await authenticatedFetch(`/api/supervisor/interns/${selectedInternId}/reset-password`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        showNotification(`Password reset to: ${data.new_password}`, 'success');
+      } else {
+        showNotification(data.message || 'Reset failed', 'error');
+      }
+    } catch { showNotification('Connection error', 'error'); }
+  };
+
   const handleExportPDF = () => {
     if (!profileData) return;
     try { exportInternReportCard(profileData); showNotification('PDF exported!', 'success'); }
@@ -217,6 +230,9 @@ const InternsTab = ({ selectedInternId, setSelectedInternId, showNotification })
             </button>
             <button className="btn btn-sm" style={{ background: '#dc2626', color: 'white', border: '1px solid #dc2626', display: 'inline-flex', alignItems: 'center', gap: '6px' }} onClick={() => setShowDeleteModal(true)}>
               <Trash2 size={16} /> Delete
+            </button>
+            <button className="btn btn-sm" style={{ background: '#7c3aed', color: 'white', border: '1px solid #7c3aed', display: 'inline-flex', alignItems: 'center', gap: '6px' }} onClick={handleResetPassword} title="Reset intern password to their current surname">
+              🔑 Reset Password
             </button>
             <button className="btn btn-primary btn-sm" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }} onClick={handleExportPDF}>
               <FileDown size={16} /> Export PDF

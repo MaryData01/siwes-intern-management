@@ -13,6 +13,7 @@ const AttendanceTab = ({ showNotification }) => {
   const [pastDates, setPastDates] = useState([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [hasUnsaved, setHasUnsaved] = useState(false);
   const [isLogged, setIsLogged] = useState(false);
 
   // Default to today or nearest Thursday
@@ -69,6 +70,7 @@ const AttendanceTab = ({ showNotification }) => {
   };
 
   const handleStatusToggle = (internId) => {
+    setHasUnsaved(true);
     setRecords(prev => prev.map(rec => {
       if (rec.intern_id === internId) {
         return { ...rec, status: rec.status === 'Present' ? 'Absent' : 'Present' };
@@ -101,6 +103,7 @@ const AttendanceTab = ({ showNotification }) => {
       const data = await response.json();
       if (response.ok) {
         showNotification(`Attendance for ${selectedDate} saved successfully!`, 'success');
+        setHasUnsaved(false);
         setIsLogged(true);
         fetchPastDates();
       } else {
@@ -239,7 +242,8 @@ const AttendanceTab = ({ showNotification }) => {
                     display: 'inline-flex', 
                     alignItems: 'center', 
                     gap: '8px', 
-                    backgroundColor: '#8fa0be', 
+                    backgroundColor: hasUnsaved ? '#1e3a8a' : '#94a3b8', 
+                    transition: 'background-color 0.2s ease',
                     color: 'white',
                     borderRadius: '8px',
                     padding: '10px 20px',
@@ -251,7 +255,7 @@ const AttendanceTab = ({ showNotification }) => {
                   disabled={submitting}
                 >
                   <Save size={18} />
-                  <span>{submitting ? 'Saving...' : 'Save Attendance'}</span>
+                  <span style={{ display:'inline-flex', alignItems:'center', gap:'6px' }}>{hasUnsaved && !submitting && <span style={{width:'8px',height:'8px',borderRadius:'50%',backgroundColor:'#fbbf24',display:'inline-block'}}/>}{submitting ? 'Saving...' : 'Save Attendance'}</span>
                 </button>
               </div>
 

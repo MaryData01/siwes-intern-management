@@ -461,6 +461,41 @@ def toggle_intern_active(current_user, intern_id):
     return jsonify({'message': f'Intern {status_str} successfully', 'is_active': new_status})
 
 
+
+@routes_bp.route('/api/supervisor/interns/<intern_id>/reset-password', methods=['POST'])
+@token_required
+@role_required('supervisor')
+def reset_intern_password(current_user, intern_id):
+    db = get_db()
+    try:
+        intern_doc = db.interns.find_one({'_id': ObjectId(intern_id)})
+    except Exception:
+        intern_doc = None
+    if not intern_doc:
+        return jsonify({'message': 'Intern not found'}), 404
+
+    uid = intern_doc.get('user_id', '')
+    try:
+        user_doc = db.users.find_one({'_id': ObjectId(uid)}) if uid else None
+    except Exception:
+        user_doc = None
+    if not user_doc:
+        return jsonify({'message': 'User not found'}), 404
+
+    surname = user_doc.get('surname') or ''
+    if not surname:
+        name_words = (user_doc.get('name') or '').strip().split()
+        surname = name_words[-1] if name_words else ''
+    if not surname:
+        return jsonify({'message': 'Cannot determine surname for this intern'}), 400
+
+    db.users.update_one(
+        {'_id': ObjectId(uid)},
+        {'$set': {'password_hash': generate_password_hash(surname)}}
+    )
+    return jsonify({'message': f'Password reset successfully', 'new_password': surname})
+
+
 # ─── ATTENDANCE ───────────────────────────────────────────────────────────────
 
 @routes_bp.route('/api/supervisor/attendance/dates', methods=['GET'])
