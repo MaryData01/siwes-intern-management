@@ -14,6 +14,7 @@ const AttendanceTab = ({ showNotification }) => {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [hasUnsaved, setHasUnsaved] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [isLogged, setIsLogged] = useState(false);
 
   // Default to today or nearest Thursday
@@ -259,6 +260,19 @@ const AttendanceTab = ({ showNotification }) => {
                 </button>
               </div>
 
+              <div style={{ padding: '12px 0 8px 0', maxWidth: '340px' }}>
+                <div style={{ position: 'relative' }}>
+                  <svg style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8', pointerEvents: 'none' }} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                  <input
+                    type="text"
+                    placeholder="Search by name..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px 9px 34px', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '0.875rem', outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' }}
+                  />
+                </div>
+              </div>
+
               <div className="table-wrapper" style={{ border: 'none', marginBottom: 0 }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
@@ -269,7 +283,7 @@ const AttendanceTab = ({ showNotification }) => {
                     </tr>
                   </thead>
                   <tbody>
-                    {records.map((rec) => (
+                    {records.filter(rec => !searchQuery.trim() || (rec.name || '').toLowerCase().includes(searchQuery.toLowerCase())).map((rec) => (
                       <tr key={rec.intern_id} style={{ borderBottom: '1px solid #f1f5f9' }}>
                         <td style={{ padding: '16px', fontWeight: 600, color: '#0f172a' }}>{rec.name}</td>
                         <td className="desktop-only" style={{ padding: '16px', textAlign: 'center' }}>
