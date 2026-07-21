@@ -82,12 +82,16 @@ const InternForm = ({ values, onChange, onSubmit, onCancel, submitting, isEdit }
       </Field>
 
       <Field label="Start Date">
-        <input type="date" style={INP} value={values.start_date}
+        <input type="date" style={INP}
+          value={values.start_date}
+          min="2020-01-01" max="2035-12-31"
           onChange={e => onChange('start_date', e.target.value)} />
       </Field>
 
       <Field label="End Date">
-        <input type="date" style={INP} value={values.end_date}
+        <input type="date" style={INP}
+          value={values.end_date}
+          min="2020-01-01" max="2035-12-31"
           onChange={e => onChange('end_date', e.target.value)} />
       </Field>
     </div>

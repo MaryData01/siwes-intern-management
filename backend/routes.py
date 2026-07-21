@@ -31,6 +31,17 @@ def calculate_duration(start_date, end_date):
     except Exception:
         return "-"
 
+def validate_year(date_str):
+    """Returns True if date_str is valid and year is between 2020-2035"""
+    if not date_str:
+        return True
+    try:
+        from datetime import datetime
+        d = datetime.strptime(date_str, '%Y-%m-%d')
+        return 2020 <= d.year <= 2035
+    except Exception:
+        return False
+
 def safe_regex(text):
     """Escape special regex chars so a name like 'John (Jr.)' doesn't crash MongoDB."""
     return re.escape(str(text))
@@ -226,6 +237,11 @@ def manage_interns(current_user):
     if not all([first_name, surname, phone, school, course_of_study, specialization]):
         return jsonify({'message': 'First Name, Surname, Phone, School, Course of Study and Specialization are required'}), 400
 
+    if start_date and not validate_year(start_date):
+        return jsonify({'message': 'Invalid Start Date — please check the year is correct (2020-2035)'}), 400
+    if end_date and not validate_year(end_date):
+        return jsonify({'message': 'Invalid End Date — please check the year is correct (2020-2035)'}), 400
+
     name = f"{first_name} {middle_name} {surname}".replace('  ', ' ').strip()
 
     if db.users.find_one({'name': {'$regex': f'^{safe_regex(name)}$', '$options': 'i'}}):
@@ -390,6 +406,11 @@ def intern_detail(current_user, intern_id):
 
         if not all([first_name, surname, phone, school, course_of_study, specialization]):
             return jsonify({'message': 'First Name, Surname, Phone, School, Course of Study and Specialization are required'}), 400
+
+        if start_date and not validate_year(start_date):
+            return jsonify({'message': 'Invalid Start Date — please check the year is correct (2020-2035)'}), 400
+        if end_date and not validate_year(end_date):
+            return jsonify({'message': 'Invalid End Date — please check the year is correct (2020-2035)'}), 400
 
         name = f"{first_name} {middle_name} {surname}".replace('  ', ' ').strip()
 
